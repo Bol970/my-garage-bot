@@ -4,10 +4,13 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createWorker } from "../src/index.js";
 import { parseEntry } from "../src/domain.js";
+import { garageSeedSql } from "../scripts/seed-garage.js";
 
 function sqliteD1() {
   const sql = new DatabaseSync(":memory:");
-  sql.exec(readFileSync(new URL("../migrations/0001_garage.sql", import.meta.url), "utf8"));
+  for (const name of ["0001_garage.sql", "0002_insurance_and_cost.sql"]) {
+    sql.exec(readFileSync(new URL("../migrations/" + name, import.meta.url), "utf8"));
+  }
   return {
     sql,
     prepare(query) {
@@ -97,7 +100,7 @@ test("гараж, замена и история обновляют одно с�
   await say("/start");
   const messageId = cards.get(5101).message_id;
   await press("new-car");
-  await say("Демо-седан | Example S | 2020 | 86 000");
+  await say("Зелёный седан | Example S | 2020 | 86 000");
   assert.equal(DB.sql.prepare("SELECT count(*) AS n FROM vehicles").get().n, 0);
   const confirmed = key("save:");
   await press(confirmed);
@@ -125,23 +128,88 @@ test("гараж, замена и история обновляют одно с�
     body.message_id === messageId && !Object.hasOwn(body, "text")));
 });
 
-test("демо, закрытие проблемы и гаражи изолированы", async () => {
+test("преподаватель читает гараж владельца и не может менять записи", async () => {
   const { DB, calls, cards, chat, send, say, press, key } = harness();
   assert.equal((await send({ update_id: 900, message: { ...chat(5101), text: "/start" } }, "wrong")).status, 403);
   await say("/start", 5103);
   assert.equal(calls.length, 0);
-  await say("/demo");
-  const firstVehicle = DB.sql.prepare("SELECT id FROM vehicles WHERE owner_id = '5101'").get().id;
-  await press("h:problem:0");
-  await press(key("e:"));
+  await say("/start", 5102);
+  assert.equal(key("new-car", 5102), undefined);
+
+  await say("/start");
+  await press("new-car");
+  await say("Зелёный седан");
+  await press(key("save:"));
+  await say("Сегодня появился стук на неровностях");
+  await press(key("save:"));
+  const ownerCard = cards.get(5101);
+  const entry = DB.sql.prepare("SELECT id, details, resolved_on FROM entries").get();
+  await say("/garage", 5102);
+  const carControl = key("v:", 5102);
+  assert(carControl);
+  await press(carControl, 5102);
+  assert.equal(key("add", 5102), undefined);
+  await press("h:problem:0", 5102);
+  await press(key("e:", 5102), 5102);
+  assert(cards.get(5102).rich_message.blocks.some((block) => block.text?.includes("стук на неровностях")));
+  assert.equal(key("edit:", 5102), undefined);
+  assert.equal(key("resolve:", 5102), undefined);
+
+  await press("new-car", 5102);
+  await press("edit:" + entry.id, 5102);
+  await press("resolve:" + entry.id, 5102);
+  await press("save:" + entry.id, 5102);
+  await say("Новая запись преподавателя", 5102);
+  assert(calls.some(({ method, body }) =>
+    method === "answerCallbackQuery" && body.text === "Вам доступен просмотр гаража."));
+  assert.equal(DB.sql.prepare("SELECT count(*) AS n FROM vehicles").get().n, 1);
+  assert.deepEqual(DB.sql.prepare("SELECT id, details, resolved_on FROM entries").get(), entry);
+  assert.equal(cards.get(5101), ownerCard);
+
   await press(key("resolve:"));
   assert(cards.get(5101).rich_message.blocks.some((block) => block.text === "Решено 25.11.2026"));
-  await say("/start", 5102);
-  await press("v:" + firstVehicle, 5102);
-  assert(!cards.get(5102).rich_message.blocks.some((block) => block.text?.includes("Демо-универсал")));
-  await say("/demo", 5102);
-  assert.equal(DB.sql.prepare("SELECT count(*) AS n FROM vehicles").get().n, 2);
-  assert.equal(DB.sql.prepare("SELECT count(resolved_on) AS n FROM entries WHERE owner_id = '5102'").get().n, 0);
+  await press("e:" + entry.id, 5102);
+  assert(cards.get(5102).rich_message.blocks.some((block) => block.text === "Решено 25.11.2026"));
+});
+
+test("страховка и стоимость сохраняются, отображаются и редактируются", async () => {
+  const { DB, cards, say, press, key } = harness();
+  await say("/start");
+  await press("new-car");
+  await say("Автомобиль");
+  await press(key("save:"));
+  await say("Купил ОСАГО 15.11.2026 за 9 800,25 ₽. Действует до 15.11.2027.");
+  assert(cards.get(5101).rich_message.blocks.some((b) => b.text === "Дата покупки · 15.11.2026"));
+  await press(key("save:"));
+  const row = DB.sql.prepare("SELECT kind, happened_on, valid_until, cost_minor FROM entries").get();
+  assert.deepEqual({ ...row }, {
+    kind: "insurance", happened_on: "2026-11-15", valid_until: "2027-11-15", cost_minor: 980025,
+  });
+  await press("c");
+  const table = cards.get(5101).rich_message.blocks.find((block) => block.type === "table");
+  assert.deepEqual(table.cells.at(-1).map((cell) => cell.text), ["Страховка действует до", "15.11.2027"]);
+  await press("h:insurance:0");
+  await press(key("e:"));
+  await press(key("edit:"));
+  await say("Купил ОСАГО 15.11.2026 за 8 400 ₽ до 14.11.2027.");
+  await press(key("save:"));
+  assert.equal(DB.sql.prepare("SELECT count(*) AS n FROM entries").get().n, 1);
+  const updated = DB.sql.prepare("SELECT valid_until, cost_minor FROM entries").get();
+  assert.deepEqual({ ...updated }, { valid_until: "2027-11-14", cost_minor: 840000 });
+  assert.throws(() => parseEntry("Купил ОСАГО 15.11.2026 до 14.11.2026", "2026-11-25"), /покупки/);
+});
+
+test("владелец получает три машины с ТО, ремонтом, страховкой и суммой", () => {
+  const { sql } = sqliteD1();
+  const statements = garageSeedSql("5101");
+  sql.exec(statements);
+  sql.exec(statements);
+  assert.equal(sql.prepare("SELECT count(*) AS n FROM vehicles WHERE owner_id = '5101'").get().n, 3);
+  assert.equal(sql.prepare("SELECT count(*) AS n FROM entries WHERE cost_minor > 0").get().n, 9);
+  const grouped = sql.prepare("SELECT kind, count(*) AS n FROM entries GROUP BY kind ORDER BY kind").all();
+  assert.deepEqual(grouped.map(({ kind, n }) => [kind, n]), [["insurance", 3], ["repair", 3], ["service", 3]]);
+  assert.equal(sql.prepare("SELECT count(*) AS n FROM entries WHERE valid_until > happened_on").get().n, 3);
+  assert.equal(sql.prepare("SELECT count(*) AS n FROM vehicles WHERE owner_id = '5102'").get().n, 0);
 });
 
 test("повтор успешен после временного сбоя редактирования", async () => {
@@ -162,17 +230,17 @@ test("HTML-виджет обновляет chat_data и сохраняет ид�
   const { calls, cards, say, press } = harness("widget", true);
   await say("/start");
   const id = cards.get(5101).message_id;
-  await press("demo");
+  await press("new-car");
   const widgetEdit = calls.find(({ method }) => method === "editMessageWidgetData").body;
   assert.equal(widgetEdit.message_id, id);
-  assert.equal(JSON.parse(widgetEdit.chat_data).t, "Демо-универсал");
+  assert.equal(JSON.parse(widgetEdit.chat_data).t, "Новый автомобиль");
   assert(!Object.hasOwn(widgetEdit, "public_data"));
 });
 
 test("при запрете виджетов Telegram бот использует Rich Messages", async () => {
   const { calls, say, press } = harness("widget");
   await say("/start");
-  await press("demo");
+  await press("new-car");
   assert.deepEqual(calls.map(({ method }) => method),
     ["sendWidget", "sendRichMessage", "answerCallbackQuery", "editMessageText"]);
 });

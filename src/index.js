@@ -4,6 +4,8 @@ import { enrichEntry } from "./openrouter.js";
 import { GarageStore } from "./store.js";
 import { callTelegramApi, deliverCard, TelegramError } from "./telegram.js";
 
+const viewActions = new Set(["g", "v", "c", "h", "e"]);
+const viewScreens = new Set(["garage", "car", "history", "detail"]);
 const idPattern = /^[0-9a-f]{16}$/;
 const reply = (status = 200) => new Response(status === 200 ? "ok" : null, { status });
 
@@ -44,7 +46,6 @@ async function callback(store, state, data, today) {
     return show(state, "garage", { vehicleId: null, carPage: Number(value) || 0 });
   }
   if (action === "new-car") return show(state, "vehicle-input", { vehicleId: null });
-  if (action === "demo") return show(state, "car", { vehicleId: await store.demo() });
   if (action === "v" && idPattern.test(value) && await store.vehicle(value)) {
     return show(state, "car", { vehicleId: value });
   }
@@ -81,8 +82,8 @@ async function message(env, store, state, text, today, http) {
   if (command === "start" || command === "garage" || command === "help" || command === "cancel") {
     return show(state, "garage", { vehicleId: null, carPage: 0 });
   }
-  if (command === "demo") return show(state, "car", { vehicleId: await store.demo() });
   if (command) return { ...state, notice: "Откройте гараж командой /garage." };
+  if (!store.canEdit) return { ...state, notice: "Вам доступен просмотр гаража." };
 
   try {
     if (state.screen === "vehicle-input" || state.draft?.type === "vehicle") {
@@ -105,20 +106,23 @@ function context(update, env) {
   const action = update?.callback_query;
   const source = action?.message || update?.message;
   const user = action?.from || source?.from;
+  const owner = env.OWNER_TELEGRAM_ID;
+  const viewer = String(user?.id);
   if (!Number.isSafeInteger(update?.update_id) || source?.chat?.type !== "private" ||
       !Number.isSafeInteger(user?.id) || user.id !== source.chat.id || user.is_bot ||
-      ![env.OWNER_TELEGRAM_ID, env.TEACHER_TELEGRAM_ID].includes(String(user.id))) return null;
+      !/^[1-9]\d*$/.test(owner ?? "") ||
+      ![owner, env.TEACHER_TELEGRAM_ID].includes(viewer)) return null;
   if (action && (typeof action.id !== "string" || typeof action.data !== "string" || action.data.length > 64)) {
     return null;
   }
   if (!action && typeof source.text !== "string") return null;
-  return { source, user, action };
+  return { source, viewer, owner, action };
 }
 
-async function ack(call, id, stale) {
+async function ack(call, id, text) {
   try {
     await call("answerCallbackQuery", {
-      callback_query_id: id, ...(stale ? { text: "Карточка обновилась. Откройте /garage." } : {}),
+      callback_query_id: id, ...(text ? { text } : {}),
     });
   } catch (error) {
     if (!(error instanceof TelegramError) || error.code !== 400 ||
@@ -140,18 +144,25 @@ export function createWorker(http = fetch, clock = () => new Date()) {
       const update = await request.json().catch(() => null);
       const event = context(update, env);
       if (!event) return reply();
-      const { source, user, action } = event;
-      const store = new GarageStore(env.DB, String(user.id));
+      const { source, viewer, owner, action } = event;
+      const store = new GarageStore(env.DB, viewer, owner);
       const call = (method, payload) => callTelegramApi(env.TELEGRAM_BOT_TOKEN, method, payload, http);
 
       try {
         if (!await store.lock()) return reply(503);
         if (await store.processed(update.update_id)) return reply();
-        const state = await store.load();
+        const loaded = await store.load();
+        const state = !store.canEdit && !viewScreens.has(loaded.screen)
+          ? show(loaded, "garage", { vehicleId: null, carPage: 0 }) : loaded;
         const stale = action && source.message_id !== state.messageId;
-        if (action) await ack(call, action.id, stale);
+        const denied = action && !store.canEdit && !viewActions.has(action.data.split(":")[0]);
+        if (action) {
+          const notice = stale ? "Карточка обновилась. Откройте /garage."
+            : (denied ? "Вам доступен просмотр гаража." : "");
+          await ack(call, action.id, notice);
+        }
         let savedState;
-        if (!stale) {
+        if (!stale && !denied) {
           const today = localDate(env.TIMEZONE, clock());
           const next = action ? await callback(store, state, action.data, today)
             : await message(env, store, state, source.text, today, http);

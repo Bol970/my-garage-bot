@@ -1,10 +1,15 @@
 import { shortId } from "./domain.js";
 
 export class GarageStore {
-  constructor(db, owner) {
+  constructor(db, viewer, owner = viewer) {
     this.db = db;
+    this.viewer = viewer;
     this.owner = owner;
     this.lease = null;
+  }
+
+  get canEdit() {
+    return this.viewer === this.owner;
   }
 
   query(sql, ...args) {
@@ -12,13 +17,13 @@ export class GarageStore {
   }
 
   async lock() {
-    await this.query("INSERT OR IGNORE INTO garages (owner_id) VALUES (?)", this.owner).run();
+    await this.query("INSERT OR IGNORE INTO garages (owner_id) VALUES (?)", this.viewer).run();
     const token = shortId();
     const now = Date.now();
     const result = await this.query(
       `UPDATE garages SET lease_token = ?, lease_until = ?
         WHERE owner_id = ? AND lease_until <= ?`,
-      token, now + 90_000, this.owner, now,
+      token, now + 90_000, this.viewer, now,
     ).run();
     if (!result.meta.changes) return false;
     this.lease = token;
@@ -27,7 +32,7 @@ export class GarageStore {
 
   async processed(updateId) {
     return Boolean(await this.query(
-      "SELECT 1 FROM garage_updates WHERE update_id = ? AND owner_id = ?", updateId, this.owner,
+      "SELECT 1 FROM garage_updates WHERE update_id = ? AND owner_id = ?", updateId, this.viewer,
     ).first());
   }
 
@@ -35,7 +40,7 @@ export class GarageStore {
     const mark = this.query(
       `INSERT OR IGNORE INTO garage_updates (update_id, owner_id, processed_at)
        SELECT ?, owner_id, ? FROM garages WHERE owner_id = ? AND lease_token = ?`,
-      updateId, Date.now(), this.owner, this.lease,
+      updateId, Date.now(), this.viewer, this.lease,
     );
     if (!state) {
       await mark.run();
@@ -43,7 +48,7 @@ export class GarageStore {
     }
     const save = this.query(
       "UPDATE garages SET state = ? WHERE owner_id = ? AND lease_token = ?",
-      JSON.stringify(state), this.owner, this.lease,
+      JSON.stringify(state), this.viewer, this.lease,
     );
     const [result] = await this.db.batch([save, mark]);
     if (!result.meta.changes) throw new Error("Garage lease expired");
@@ -52,18 +57,18 @@ export class GarageStore {
   async release() {
     await this.query(
       "UPDATE garages SET lease_token = NULL, lease_until = 0 WHERE owner_id = ? AND lease_token = ?",
-      this.owner, this.lease,
+      this.viewer, this.lease,
     ).run();
   }
 
   async load() {
-    const { state } = await this.query("SELECT state FROM garages WHERE owner_id = ?", this.owner).first();
+    const { state } = await this.query("SELECT state FROM garages WHERE owner_id = ?", this.viewer).first();
     return { screen: "garage", filter: "all", page: 0, ...JSON.parse(state) };
   }
 
   async cars() {
     const { results } = await this.query(
-      "SELECT * FROM vehicles WHERE owner_id = ? ORDER BY is_demo, created_at, id", this.owner,
+      "SELECT * FROM vehicles WHERE owner_id = ? ORDER BY created_at, id", this.owner,
     ).all();
     return results;
   }
@@ -74,39 +79,32 @@ export class GarageStore {
       : null;
   }
 
-  insertVehicle(id, vehicle, demo = 0) {
-    return this.query(
-      `INSERT OR IGNORE INTO vehicles (id, owner_id, nickname, model, model_year, initial_mileage, is_demo)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      id, this.owner, vehicle.nickname, vehicle.model, vehicle.modelYear, vehicle.initialMileage, demo,
-    );
-  }
-
   async addVehicle(id, vehicle) {
-    await this.insertVehicle(id, vehicle).run();
-  }
-
-  insertEntry(id, vehicleId, entry) {
-    return this.query(
-      `INSERT OR IGNORE INTO entries
-       (id, owner_id, vehicle_id, happened_on, mileage, kind, title, details, tags)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      id, this.owner, vehicleId, entry.date, entry.mileage, entry.kind,
-      entry.title, entry.details, JSON.stringify(entry.tags),
-    );
+    await this.query(
+      `INSERT OR IGNORE INTO vehicles (id, owner_id, nickname, model, model_year, initial_mileage)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      id, this.viewer, vehicle.nickname, vehicle.model, vehicle.modelYear, vehicle.initialMileage,
+    ).run();
   }
 
   async addEntry(id, vehicleId, entry) {
-    await this.insertEntry(id, vehicleId, entry).run();
+    await this.query(
+      `INSERT OR IGNORE INTO entries
+       (id, owner_id, vehicle_id, happened_on, mileage, kind, title, details, tags, cost_minor, valid_until)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, this.viewer, vehicleId, entry.date, entry.mileage, entry.kind,
+      entry.title, entry.details, JSON.stringify(entry.tags), entry.costMinor ?? null, entry.validUntil ?? null,
+    ).run();
   }
 
   async editEntry(id, vehicleId, entry) {
     await this.query(
       `UPDATE entries SET happened_on = ?, mileage = ?, kind = ?, title = ?, details = ?, tags = ?,
+       cost_minor = ?, valid_until = ?,
        resolved_on = CASE WHEN kind = 'problem' AND ? = 'problem' AND resolved_on >= ? THEN resolved_on END
        WHERE owner_id = ? AND vehicle_id = ? AND id = ?`,
       entry.date, entry.mileage, entry.kind, entry.title, entry.details, JSON.stringify(entry.tags),
-      entry.kind, entry.date, this.owner, vehicleId, id,
+      entry.costMinor ?? null, entry.validUntil ?? null, entry.kind, entry.date, this.viewer, vehicleId, id,
     ).run();
   }
 
@@ -131,7 +129,7 @@ export class GarageStore {
     await this.query(
       `UPDATE entries SET resolved_on = ? WHERE owner_id = ? AND vehicle_id = ? AND id = ?
         AND kind = 'problem' AND resolved_on IS NULL`,
-      today, this.owner, vehicleId, id,
+      today, this.viewer, vehicleId, id,
     ).run();
   }
 
@@ -142,35 +140,11 @@ export class GarageStore {
         max(CASE WHEN EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'oil_change') THEN happened_on END) AS last_oil,
         max(CASE WHEN EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'filter_change') THEN happened_on END) AS last_filters,
         max(mileage) AS mileage,
+        max(valid_until) AS policy_until,
+        sum(cost_minor) AS total_cost,
         count(CASE WHEN kind = 'problem' AND resolved_on IS NULL THEN 1 END) AS open_problems
         FROM entries WHERE owner_id = ? AND vehicle_id = ?`,
       this.owner, vehicleId,
     ).first();
-  }
-
-  async demo() {
-    const existing = await this.query(
-      "SELECT id FROM vehicles WHERE owner_id = ? AND is_demo = 1 LIMIT 1", this.owner,
-    ).first();
-    if (existing) return existing.id;
-    const id = shortId();
-    await this.db.batch([
-      this.insertVehicle(id, {
-        nickname: "Демо-универсал", model: "Вымышленный автомобиль", modelYear: 2021, initialMileage: 84200,
-      }, 1),
-      this.insertEntry(shortId(), id, {
-        date: "2026-10-15", mileage: 82400, kind: "service", title: "Замена масла и масляного фильтра",
-        details: "Моторное масло 5W-30 и масляный фильтр.", tags: ["oil", "filters", "oil_change", "filter_change"],
-      }),
-      this.insertEntry(shortId(), id, {
-        date: "2026-11-10", mileage: 83600, kind: "repair", title: "Замена передних колодок",
-        details: "После работ тормоза проверили на короткой поездке.", tags: [],
-      }),
-      this.insertEntry(shortId(), id, {
-        date: "2026-11-20", mileage: 84200, kind: "problem", title: "Стук на неровностях",
-        details: "Замечен спереди справа на малой скорости.", tags: [],
-      }),
-    ]);
-    return id;
   }
 }

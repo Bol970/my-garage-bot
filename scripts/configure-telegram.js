@@ -19,7 +19,6 @@ try {
   await call("setMyCommands", {
     commands: [
       { command: "garage", description: "Открыть гараж" },
-      { command: "demo", description: "Открыть демо с вымышленными записями" },
       { command: "cancel", description: "Вернуться в гараж" },
     ],
   });

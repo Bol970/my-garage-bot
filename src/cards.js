@@ -1,4 +1,4 @@
-import { filters, formatDate, formatMileage, kinds } from "./domain.js";
+import { filters, formatCost, formatDate, formatMileage, kinds } from "./domain.js";
 
 const size = 5;
 const button = (text, callback_data) => ({ text, callback_data });
@@ -9,14 +9,15 @@ const addEntry = button("＋ Запись", "add");
 const date = (value) => value ? formatDate(value) : "—";
 
 function vehicleInfo(car) {
-  return [car.model, car.model_year, car.is_demo ? "Демо" : ""].filter(Boolean).join(" · ");
+  return [car.model, car.model_year].filter(Boolean).join(" · ");
 }
 
 function entryInfo(entry) {
   return [
-    formatDate(entry.happened_on),
+    entry.kind === "insurance" ? "Куплена " + formatDate(entry.happened_on) : formatDate(entry.happened_on),
     entry.mileage == null ? "" : formatMileage(entry.mileage),
     entry.kind === "problem" ? (entry.resolved_on ? "Решено" : "Открыто") : kinds[entry.kind],
+    entry.cost_minor == null ? "" : formatCost(entry.cost_minor),
   ].filter(Boolean).join(" · ");
 }
 
@@ -25,6 +26,7 @@ function view(title, lines, buttons, details = [], table = []) {
 }
 
 export async function makeView(env, store, state) {
+  const { canEdit } = store;
   const car = await store.vehicle(state.vehicleId);
   const carName = car?.nickname || "";
   let card;
@@ -40,12 +42,11 @@ export async function makeView(env, store, state) {
       ];
       card = view(env.APP_NAME || "Мой гараж",
         choices.length ? choices.map((item) => [item.nickname, vehicleInfo(item)].filter(Boolean).join(" · "))
-          : ["Добавьте автомобиль, чтобы начать журнал."],
+          : [canEdit ? "Добавьте автомобиль, чтобы начать журнал." : "В гараже пока нет автомобилей."],
         [...choices.map((item) => [button(item.nickname, "v:" + item.id)]),
           ...(navigation.length ? [navigation] : []),
-          [button("＋ Автомобиль", "new-car"), button("Демо", "demo")]],
-        ["Выберите автомобиль для просмотра последних замен и истории.",
-          "Демо создаёт отдельную карточку с вымышленными записями."]);
+          ...(canEdit ? [[button("＋ Автомобиль", "new-car")]] : [])],
+        ["Выберите автомобиль для просмотра последних замен и истории."]);
       break;
     }
     case "vehicle-input":
@@ -62,13 +63,15 @@ export async function makeView(env, store, state) {
         vehicleInfo(car),
         mileage >= 0 ? "Пробег · " + formatMileage(mileage) : "",
         "Записей · " + summary.count + "   •   Открытых проблем · " + summary.open_problems,
-      ], [[addEntry, history], [garage]], [
+        summary.total_cost == null ? "" : "Расходы по записям · " + formatCost(summary.total_cost),
+      ], [canEdit ? [addEntry, history] : [history], [garage]], [
         "Откройте историю, чтобы посмотреть записи по маслу, фильтрам, ремонту и проблемам.",
       ], [
         ["Обслуживание", "Дата"],
         ["Последнее ТО", date(summary.last_service)],
         ["Замена масла", date(summary.last_oil)],
         ["Замена фильтров", date(summary.last_filters)],
+        ["Страховка действует до", date(summary.policy_until)],
       ]);
       break;
     }
@@ -86,15 +89,16 @@ export async function makeView(env, store, state) {
           .concat(shown.length ? [] : ["В этом разделе пока нет записей."]),
         [...shown.map((entry, i) => [button((i + 1) + ". " + entry.title.slice(0, 34), "e:" + entry.id)]),
           ...(navigation.length ? [navigation] : []),
-          [pick("all"), pick("service"), pick("oil")],
-          [pick("filters"), pick("repair"), pick("problem")], [carButton, addEntry]]);
+          [pick("all"), pick("service"), pick("insurance")],
+          [pick("oil"), pick("filters")], [pick("repair"), pick("problem")], canEdit ? [carButton, addEntry] : [carButton]]);
       break;
     }
     case "entry-input":
       card = view(state.editId ? "Исправить запись" : "Новая запись", [
         carName,
         "Отправьте описание одним сообщением. Если даты нет, подставлю сегодняшнюю.",
-        "Пример: вчера на 86 400 км заменил масло 5W-30 и фильтр.",
+        "Вчера на 86 400 км заменил масло и фильтр за 7 500 ₽.",
+        "Купил ОСАГО 15.11.2026 за 9 800 ₽. Действует до 15.11.2027.",
       ], [[carButton]]);
       break;
     case "preview": {
@@ -104,22 +108,28 @@ export async function makeView(env, store, state) {
         data.nickname, data.model, data.modelYear ? String(data.modelYear) : "", formatMileage(data.initialMileage),
       ], [[button("Сохранить", "save:" + draft.id)], [button("Исправить", "new-car"), garage]]) :
         view("Проверьте запись", [
-          carName, data.title, kinds[data.kind] + " · " + formatDate(data.date), formatMileage(data.mileage),
+          carName, data.title,
+          data.kind === "insurance" ? "Дата покупки · " + formatDate(data.date) : kinds[data.kind] + " · " + formatDate(data.date),
+          data.kind === "insurance" ? "Действует до · " + date(data.validUntil) : formatMileage(data.mileage),
+          data.costMinor == null ? "" : "Стоимость · " + formatCost(data.costMinor),
         ], [[button("Сохранить", "save:" + draft.id)], [button("Исправить", "redo"), carButton]], [data.details]);
       break;
     }
     case "detail": {
       const entry = await store.entry(state.entryId, car.id);
-      const controls = [button("Исправить", "edit:" + entry.id)];
-      if (entry.kind === "problem" && !entry.resolved_on) controls.push(button("Проблема решена", "resolve:" + entry.id));
+      const controls = canEdit ? [button("Исправить", "edit:" + entry.id)] : [];
+      if (canEdit && entry.kind === "problem" && !entry.resolved_on) controls.push(button("Проблема решена", "resolve:" + entry.id));
       card = view(entry.title, [
-        carName, entryInfo(entry), entry.resolved_on ? "Решено " + formatDate(entry.resolved_on) : "",
-      ], [controls, [carButton, history]], [entry.details]);
+        carName, entryInfo(entry),
+        entry.kind === "insurance" ? "Действует до · " + date(entry.valid_until) : "",
+        entry.resolved_on ? "Решено " + formatDate(entry.resolved_on) : "",
+      ], [...(controls.length ? [controls] : []), [carButton, history]], [entry.details]);
       break;
     }
     default:
       throw new Error("Unknown garage screen");
   }
+  if (!canEdit && state.screen === "garage" && !state.notice) card.lines.unshift("Режим просмотра");
   if (state.notice) card.lines.unshift(state.notice);
   return card;
 }

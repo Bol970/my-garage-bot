@@ -1,6 +1,6 @@
 import { garageAccess } from "./access.js";
 import { filters, InputError, localDate, parseEntry, parseVehicle } from "./domain.js";
-import { expenseDay, expensePeriod } from "./expenses.js";
+import { expenseDay, expenseReport } from "./expenses.js";
 import { GarageStore } from "./store.js";
 import { appClient } from "./mini-app-client.js";
 import { appPage, appStyles } from "./mini-app-page.js";
@@ -8,6 +8,7 @@ import { appPage, appStyles } from "./mini-app-page.js";
 const encoder = new TextEncoder();
 const idPattern = /^[0-9a-f]{16}$/;
 const pageSize = 12;
+const expensePageSize = 20;
 const writeActions = new Set(["create-car", "save-entry", "resolve"]);
 const checkActions = new Set(["check-car", "check-entry"]);
 
@@ -108,13 +109,14 @@ async function calendar(store, payload, today) {
   }
   if (payload.action === "expense-day") {
     const day = expenseDay(payload.day);
-    const entries = await store.expensesOn(day, vehicleId);
+    const entries = await store.expenseEntries(day, day, vehicleId);
     return json({ day, entries });
   }
-  const period = expensePeriod(payload.mode, payload.anchor, today);
-  const [rows, vehicles] = await Promise.all([store.expenses(period, vehicleId), store.cars()]);
-  const total = rows.reduce((sum, row) => sum + row.amount, 0);
-  return json({ period, today, rows, total, cars: vehicles.map(publicVehicle) });
+  const [report, vehicles] = await Promise.all([
+    expenseReport(store, { ...payload, vehicleId }, today, expensePageSize),
+    store.cars(),
+  ]);
+  return json({ ...report, today, cars: vehicles.map(publicVehicle) });
 }
 
 async function appApi(request, env, now) {

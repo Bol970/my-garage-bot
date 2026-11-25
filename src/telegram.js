@@ -1,3 +1,10 @@
+export const garageCommands = [
+  { command: "garage", description: "Открыть гараж" },
+  { command: "expenses", description: "Показать расходы списком" },
+  { command: "calendar", description: "Открыть календарь расходов" },
+  { command: "cancel", description: "Вернуться в гараж" },
+];
+
 import { richMessage } from "./cards.js";
 import { widgetHtml, widgetState } from "./widget.js";
 

@@ -83,7 +83,9 @@ input::placeholder, textarea::placeholder { color: var(--hint); opacity: 1; }
 .entry-text { white-space: pre-wrap; }
 
 .calendar-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .4rem; }
-.calendar-modes button { padding-inline: .25rem; }
+.calendar-modes button, .expense-views button { padding-inline: .25rem; }
+.expense-views { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .4rem; }
+.expense-date-group h2 { padding: .25rem .2rem .05rem; font-size: .88rem; color: var(--hint); }
 .calendar-navigation { display: grid; grid-template-columns: 44px 1fr 44px; gap: .6rem; align-items: center; }
 .calendar-navigation h2 { text-align: center; text-transform: capitalize; }
 .calendar-modes button, .calendar-navigation button { min-width: 0; }

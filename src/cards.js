@@ -1,3 +1,4 @@
+import { expenseChatCard, expenseScopeCard } from "./expense-chat.js";
 import { filters, formatCost, formatDate, formatMileage, kinds } from "./domain.js";
 
 const size = 5;
@@ -25,13 +26,19 @@ function view(title, lines, buttons, details = [], table = []) {
   return { title, lines: lines.filter(Boolean), buttons, details: details.filter(Boolean), table };
 }
 
-export async function makeView(env, store, state) {
+export async function makeView(env, store, state, today) {
   const { canEdit } = store;
   const car = await store.vehicle(state.vehicleId);
   const carName = car?.nickname || "";
   let card;
 
   switch (state.screen) {
+    case "expenses":
+      card = await expenseChatCard(store, state.expenses, today);
+      break;
+    case "expense-cars":
+      card = await expenseScopeCard(store, state);
+      break;
     case "garage": {
       const cars = await store.cars();
       const page = Math.max(0, Math.min(state.carPage || 0, Math.ceil(cars.length / size) - 1));
@@ -45,6 +52,7 @@ export async function makeView(env, store, state) {
           : [canEdit ? "Добавьте автомобиль, чтобы начать журнал." : "В гараже пока нет автомобилей."],
         [...choices.map((item) => [button(item.nickname, "v:" + item.id)]),
           ...(navigation.length ? [navigation] : []),
+          [button("Расходы гаража", "x:garage")],
           ...(canEdit ? [[button("＋ Автомобиль", "new-car")]] : [])],
         ["Выберите автомобиль для просмотра последних замен и истории."]);
       break;
@@ -64,7 +72,7 @@ export async function makeView(env, store, state) {
         mileage >= 0 ? "Пробег · " + formatMileage(mileage) : "",
         "Записей · " + summary.count + "   •   Открытых проблем · " + summary.open_problems,
         summary.total_cost == null ? "" : "Расходы по записям · " + formatCost(summary.total_cost),
-      ], [canEdit ? [addEntry, history] : [history], [garage]], [
+      ], [canEdit ? [addEntry, history] : [history], [button("Расходы авто", "x:current"), garage]], [
         "Откройте историю, чтобы посмотреть записи по маслу, фильтрам, ремонту и проблемам.",
       ], [
         ["Обслуживание", "Дата"],
@@ -123,7 +131,8 @@ export async function makeView(env, store, state) {
         carName, entryInfo(entry),
         entry.kind === "insurance" ? "Действует до · " + date(entry.valid_until) : "",
         entry.resolved_on ? "Решено " + formatDate(entry.resolved_on) : "",
-      ], [...(controls.length ? [controls] : []), [carButton, history]], [entry.details]);
+      ], [...(controls.length ? [controls] : []), [carButton, history],
+        ...(state.expenseBack ? [[button("‹ Расходы", "x:back")]] : [])], [entry.details]);
       break;
     }
     default:

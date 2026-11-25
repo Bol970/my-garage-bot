@@ -34,3 +34,17 @@ export function expenseDay(value) {
   }
   return value;
 }
+
+export async function expenseReport(store, selection, today, pageSize) {
+  const { mode, anchor, vehicleId = null, display = "calendar", page = 0 } = selection;
+  if (display !== "calendar" && display !== "list") throw new InputError("Выберите календарь или список.");
+  if (!Number.isInteger(page) || page < 0 || page > 10_000) throw new InputError("Некорректная страница расходов.");
+  const period = expensePeriod(mode, anchor, today);
+  const last = new Date(Date.parse(period.end) - 86_400_000).toISOString().slice(0, 10);
+  const [rows, entries] = await Promise.all([
+    store.expenses(period, vehicleId),
+    display === "list" ? store.expenseEntries(period.start, last, vehicleId, pageSize + 1, page * pageSize) : [],
+  ]);
+  const total = rows.reduce((sum, row) => sum + row.amount, 0);
+  return { period, rows, total, entries: entries.slice(0, pageSize), hasMore: entries.length > pageSize };
+}

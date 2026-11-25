@@ -52,11 +52,44 @@ function periodMonths(period, rows, choose) {
   return grid;
 }
 
-async function showExpenses(mode = "month", anchor, vehicleId = null) {
-  const { period, today, rows, total, cars } = await api("expenses", { mode, anchor, vehicleId });
+function expenseRecord(entry, back, label, showVehicle) {
+  const info = [showVehicle ? entry.vehicle : "", title[entry.kind], cost(entry.cost_minor)];
+  return record(entry.title, info.filter(Boolean).join(" · "),
+    () => showEntry(entry.vehicle_id, entry.id, "all", 0, back, label));
+}
+
+function expenseList(entries, back, showVehicle) {
+  const list = el("div", "", "stack");
+  let group;
+  let date;
+  for (const entry of entries) {
+    if (entry.happened_on !== date) {
+      date = entry.happened_on;
+      group = el("section", "", "stack expense-date-group");
+      group.append(el("h2", displayDate(date)));
+      list.append(group);
+    }
+    group.append(expenseRecord(entry, back, "‹ К списку", showVehicle));
+  }
+  return list;
+}
+
+function expenseSegments(items, selected, jump, className) {
+  const group = el("div", "", className);
+  for (const [key, name] of Object.entries(items)) {
+    const control = button(name, () => jump(key), key === selected ? "primary" : "");
+    control.setAttribute("aria-pressed", String(key === selected));
+    group.append(control);
+  }
+  return group;
+}
+
+async function showExpenses(mode = "month", anchor, vehicleId = null, display = "calendar", page = 0) {
+  const { period, today, rows, total, cars, entries, hasMore } =
+    await api("expenses", { mode, anchor, vehicleId, display, page });
   const focusMonth = anchor ?? today.slice(0, 7);
   const chooseScope = el("select");
-  for (const [value, name] of [["", "Все машины"], ...cars.map((car) => [car.id, car.nickname])]) {
+  for (const [value, name] of [["", "Весь гараж"], ...cars.map((car) => [car.id, car.nickname])]) {
     const option = el("option", name);
     option.value = value;
     chooseScope.append(option);
@@ -65,31 +98,37 @@ async function showExpenses(mode = "month", anchor, vehicleId = null) {
   chooseScope.addEventListener("change", () => {
     const selected = chooseScope.value || null;
     chooseScope.value = vehicleId || "";
-    run(() => showExpenses(mode, focusMonth, selected), chooseScope);
+    run(() => showExpenses(mode, focusMonth, selected, display), chooseScope);
   });
-  const modeButtons = el("div", "", "calendar-modes");
-  for (const [key, name] of Object.entries(periodModes)) {
-    const change = button(name, () => showExpenses(key, focusMonth, vehicleId), key === mode ? "primary" : "");
-    change.setAttribute("aria-pressed", String(key === mode));
-    modeButtons.append(change);
-  }
+  const modeButtons = expenseSegments(periodModes, mode,
+    (value) => showExpenses(value, focusMonth, vehicleId, display), "calendar-modes");
+  const viewButtons = expenseSegments({ calendar: "Календарь", list: "Список" }, display,
+    (value) => showExpenses(mode, focusMonth, vehicleId, value), "expense-views");
   const navigation = el("div", "", "calendar-navigation");
-  const previous = button("‹", () => showExpenses(mode, period.previous, vehicleId));
-  const next = button("›", () => showExpenses(mode, period.next, vehicleId));
+  const previous = button("‹", () => showExpenses(mode, period.previous, vehicleId, display));
+  const next = button("›", () => showExpenses(mode, period.next, vehicleId, display));
   previous.setAttribute("aria-label", "Предыдущий период");
   next.setAttribute("aria-label", "Следующий период");
   previous.disabled = !period.previous;
   next.disabled = !period.next;
   navigation.append(previous, el("h2", periodCaption(period)), next);
 
-  const detail = mode === "month"
-    ? monthGrid(period, rows, today, (day) => showExpenseDay(day, mode, focusMonth, vehicleId))
-    : periodMonths(period, rows, (month) => showExpenses("month", month, vehicleId));
-
   const main = [
-    label("Автомобиль", chooseScope), modeButtons, navigation,
-    stats([["За период", cost(total)]]), detail,
+    label("Машины", chooseScope), modeButtons, navigation,
+    stats([["За период", cost(total)]]), viewButtons,
   ];
+  if (display === "list") {
+    const back = () => showExpenses(mode, focusMonth, vehicleId, display, page);
+    main.push(expenseList(entries, back, vehicleId === null));
+    const pages = el("div", "", "row");
+    if (page > 0) pages.append(button("‹ Предыдущая", () => showExpenses(mode, focusMonth, vehicleId, display, page - 1)));
+    if (hasMore) pages.append(button("Следующая ›", () => showExpenses(mode, focusMonth, vehicleId, display, page + 1)));
+    if (pages.childElementCount) main.push(pages);
+  } else {
+    main.push(mode === "month"
+      ? monthGrid(period, rows, today, (day) => showExpenseDay(day, mode, focusMonth, vehicleId))
+      : periodMonths(period, rows, (month) => showExpenses("month", month, vehicleId)));
+  }
   if (!rows.length) main.push(el("p", "За этот период расходов нет.", "muted"));
   view("Расходы", main, [button("‹ Гараж", home)]);
 }
@@ -97,9 +136,7 @@ async function showExpenses(mode = "month", anchor, vehicleId = null) {
 async function showExpenseDay(day, mode, anchor, vehicleId) {
   const { entries } = await api("expense-day", { day, vehicleId });
   const back = () => showExpenseDay(day, mode, anchor, vehicleId);
-  const main = entries.map((entry) => record(entry.title,
-    [entry.vehicle, title[entry.kind], cost(entry.cost_minor)].join(" · "),
-    () => showEntry(entry.vehicle_id, entry.id, "all", 0, back)));
+  const main = entries.map((entry) => expenseRecord(entry, back, "‹ Расходы за день", vehicleId === null));
   if (!main.length) main.push(el("p", "За этот день расходов нет.", "muted"));
   view("Расходы за " + displayDate(day), main, [button("‹ Календарь", () => showExpenses(mode, anchor, vehicleId))]);
 }

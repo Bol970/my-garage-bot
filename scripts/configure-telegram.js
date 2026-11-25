@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { callTelegramApi, TelegramError } from "../src/telegram.js";
+import { callTelegramApi, garageCommands, TelegramError } from "../src/telegram.js";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
@@ -16,12 +16,7 @@ try {
   await call("setMySettings", {
     can_join_groups: false, supports_inline_queries: false, callback_query_mode: "default",
   });
-  await call("setMyCommands", {
-    commands: [
-      { command: "garage", description: "Открыть гараж" },
-      { command: "cancel", description: "Вернуться в гараж" },
-    ],
-  });
+  await call("setMyCommands", { commands: garageCommands });
   const image = await readFile(new URL("../assets/avatar.jpg", import.meta.url));
   const photo = new FormData();
   photo.append("photo", JSON.stringify({ type: "static", photo: "attach://avatar" }));

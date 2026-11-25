@@ -423,6 +423,31 @@ test("календарь суммирует расходы за месяц, кв
   assert.equal((await read({ action: "expenses", mode: "year", anchor: "2026-11" }, 5102)).total, 13_880_000);
   assert.equal((await read({ action: "expenses", mode: "year", anchor: "2026-02", vehicleId: rav4 })).total, 5_550_000);
 
+  const yearList = await read({ action: "expenses", mode: "year", anchor: "2026-11", display: "list" }, 5102);
+  assert.equal(yearList.total, 13_880_000);
+  assert.equal(yearList.entries.length, 9);
+  assert.equal(yearList.entries[0].happened_on, "2026-11-11");
+  assert.equal(new Set(yearList.entries.map((entry) => entry.vehicle_id)).size, 3);
+  const scopedList = await read({ action: "expenses", mode: "year", anchor: "2026-02", vehicleId: rav4, display: "list" });
+  assert.equal(scopedList.total, 5_550_000);
+  assert.equal(scopedList.entries.length, 3);
+  assert(scopedList.entries.every((entry) => entry.vehicle_id === rav4));
+
+  const insert = DB.sql.prepare(
+    "INSERT INTO entries (id, owner_id, vehicle_id, happened_on, kind, title, cost_minor) VALUES (?, '5101', ?, '2026-03-25', 'repair', 'Работа', 1000)",
+  );
+  for (let i = 0; i < 22; i++) insert.run("extra-fixture-" + i, rav4);
+  const requestPage = { action: "expenses", mode: "month", anchor: "2026-03", display: "list", vehicleId: rav4 };
+  const first = await read(requestPage);
+  const second = await read({ ...requestPage, page: 1 });
+  assert.equal(first.total, 1_342_000);
+  assert.equal(second.total, first.total);
+  assert.equal(first.entries.length, 20);
+  assert.equal(second.entries.length, 3);
+  assert.equal(new Set([...first.entries, ...second.entries].map((entry) => entry.id)).size, 23);
+  assert.equal(first.hasMore, true);
+  assert.equal(second.hasMore, false);
+
   const day = await read({ action: "expense-day", day: "2026-11-04" }, 5102);
   assert.equal(day.entries[0].vehicle_id, rav4);
   assert.equal(day.entries[0].cost_minor, 2_650_000);
@@ -492,4 +517,58 @@ test("отклонённое Telegram напоминание можно отпр
   await worker.scheduled({ scheduledTime: at }, env);
   assert.equal(attempts, 2);
   assert.equal(DB.sql.prepare("SELECT count(sent_at) AS n FROM osago_reminders").get().n, 1);
+});
+
+test("Telegram-команды открывают календарь и список по гаражу и автомобилю", async () => {
+  const { DB, say, press, cards, key, calls } = harness();
+  DB.sql.exec(garageSeedSql("5101"));
+  const car = DB.sql.prepare("SELECT id, nickname FROM vehicles WHERE model = 'Toyota RAV4'").get();
+  const blocks = (id = 5101) => cards.get(id).rich_message.blocks;
+  const texts = (id = 5101) => blocks(id).map(({ text }) => text?.replace(/\s+/gu, " ")).filter(Boolean);
+  assert.equal((await say("/expenses year all")).status, 200);
+  const messageId = cards.get(5101).message_id;
+  assert(texts().includes("Расходы списком"));
+  assert(texts().includes("Весь гараж"));
+  assert(texts().includes("За период · 138 800 ₽"));
+  assert(key("x:page:1"));
+  await press("x:page:1");
+  assert(texts().some((line) => line.includes("12.03.2026")));
+
+  await say("/calendar quarter all");
+  assert(texts().includes("Календарь расходов"));
+  assert(texts().includes("За период · 56 250 ₽"));
+  const quarter = blocks().find((block) => block.type === "table");
+  assert.equal(quarter.cells.length, 4);
+
+  await press("x:scope:0");
+  assert.equal(texts()[0], "Расходы по автомобилю");
+  await press("x:vehicle:" + car.id);
+  assert(texts().includes(car.nickname));
+  assert(texts().includes("За период · 26 500 ₽"));
+  await press("x:display:list");
+  assert(texts().includes("Расходы списком"));
+  assert(texts().includes(car.nickname));
+  await press(key("x:entry:"));
+  assert(texts().some((line) => line.includes("ступичный подшипник")));
+  await press("x:back");
+  assert.equal(texts()[0], "Расходы списком");
+  assert.equal(cards.get(5101).message_id, messageId);
+
+  await say("/calendar month car", 5102);
+  assert.equal(texts(5102)[0], "Расходы по автомобилю");
+  await press("x:vehicle:" + car.id, 5102);
+  const month = blocks(5102).find((block) => block.type === "table");
+  assert.equal(month.cells[0].length, 7);
+  assert(month.cells.some((row) => row.some((cell) => cell.text.includes("₽"))));
+  assert.equal(key("edit:", 5102), undefined);
+  assert.equal(calls.filter(({ method, body }) => method === "sendRichMessage" && body.chat_id === 5101).length, 1);
+
+  await say("/garage");
+  assert(key("x:garage"));
+  await press("v:" + car.id);
+  await press("x:current");
+  assert(texts().includes(car.nickname));
+  await press("x:all");
+  assert(texts().includes("Весь гараж"));
+  assert(texts().includes("За период · 37 700 ₽"));
 });

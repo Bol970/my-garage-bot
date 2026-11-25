@@ -145,16 +145,16 @@ export class GarageStore {
     return results;
   }
 
-  async expensesOn(day, vehicleId) {
+  async expenseEntries(start, last, vehicleId, limit = -1, offset = 0) {
     const { results } = await this.query(
-      `SELECT e.id, e.vehicle_id, e.title, e.kind, e.cost_minor, v.nickname AS vehicle
+      `SELECT e.id, e.vehicle_id, e.happened_on, e.title, e.kind, e.cost_minor, v.nickname AS vehicle
        FROM entries AS e JOIN vehicles AS v ON v.owner_id = e.owner_id AND v.id = e.vehicle_id
-       WHERE e.owner_id = ? AND e.happened_on = ? AND e.cost_minor IS NOT NULL
+       WHERE e.owner_id = ? AND e.happened_on BETWEEN ? AND ? AND e.cost_minor IS NOT NULL
        AND (? IS NULL OR e.vehicle_id = ?)
-       ORDER BY e.created_at, e.id`,
-      this.owner, day, vehicleId, vehicleId,
+       ORDER BY e.happened_on DESC, e.created_at DESC, e.id DESC LIMIT ? OFFSET ?`,
+      this.owner, start, last, vehicleId, vehicleId, limit, offset,
     ).all();
-    return results;
+    return results.map((entry) => ({ ...entry, title: entry.title.replace(/\s+([,.!?;:])/gu, "$1") }));
   }
 
   async insurancePolicies(day) {

@@ -125,7 +125,7 @@ async function home() {
   const cars = data.cars.map((car) => record(car.nickname, carName(car), () => showCar(car.id)));
   if (!cars.length) cars.push(el("p", "В гараже пока нет автомобилей.", "muted"));
   if (!canEdit) cars.unshift(el("p", "Режим просмотра", "muted"));
-  const actions = [button("Расходы", () => showExpenses())];
+  const actions = [button("Расходы гаража", () => showExpenses())];
   if (canEdit) actions.push(button("＋ Автомобиль", () => carForm(), "primary"));
   view("Гараж", cars, actions);
 }
@@ -200,12 +200,12 @@ async function showCar(vehicleId, filter = "all", page = 0) {
     label("История", select), ...history,
   ];
   if (steps.childElementCount) main.push(steps);
-  const actions = [button("‹ Гараж", home), button("Расходы", () => showExpenses("month", undefined, vehicleId))];
+  const actions = [button("‹ Гараж", home), button("Расходы авто", () => showExpenses("month", undefined, vehicleId))];
   if (canEdit) actions.push(button("＋ Запись", () => entryForm(vehicleId), "primary"));
   view(car.nickname, main, actions);
 }
 
-async function showEntry(vehicleId, entryId, filter = "all", page = 0, returnTo) {
+async function showEntry(vehicleId, entryId, filter = "all", page = 0, returnTo, returnLabel) {
   const entry = await api("entry", { vehicleId, entryId });
   const values = [[entry.kind === "insurance" ? "Дата покупки" : "Дата", displayDate(entry.happened_on)],
     ["Категория", title[entry.kind]], ["Стоимость", cost(entry.cost_minor)]];
@@ -217,11 +217,11 @@ async function showEntry(vehicleId, entryId, filter = "all", page = 0, returnTo)
   if (canEdit && entry.kind === "problem" && !entry.resolved_on) {
     main.push(button("Проблема решена", async () => {
       await api("resolve", { vehicleId, entryId });
-      await showEntry(vehicleId, entryId, filter, page, returnTo);
+      await showEntry(vehicleId, entryId, filter, page, returnTo, returnLabel);
     }));
   }
   const actions = [returnTo
-    ? button("‹ Расходы за день", returnTo)
+    ? button(returnLabel, returnTo)
     : button("‹ История", () => showCar(vehicleId, filter, page))];
   if (canEdit) actions.push(button("Исправить", () => entryForm(vehicleId, entry), "primary"));
   view(entry.title, main, actions);

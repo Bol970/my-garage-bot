@@ -1,5 +1,7 @@
+import { garageAccess } from "./access.js";
 import { makeView } from "./cards.js";
 import { filters, InputError, localDate, parseEntry, parseVehicle, shortId } from "./domain.js";
+import { miniApp } from "./mini-app.js";
 import { enrichEntry } from "./openrouter.js";
 import { GarageStore } from "./store.js";
 import { callTelegramApi, deliverCard, TelegramError } from "./telegram.js";
@@ -106,17 +108,14 @@ function context(update, env) {
   const action = update?.callback_query;
   const source = action?.message || update?.message;
   const user = action?.from || source?.from;
-  const owner = env.OWNER_TELEGRAM_ID;
-  const viewer = String(user?.id);
+  const access = garageAccess(env, user?.id);
   if (!Number.isSafeInteger(update?.update_id) || source?.chat?.type !== "private" ||
-      !Number.isSafeInteger(user?.id) || user.id !== source.chat.id || user.is_bot ||
-      !/^[1-9]\d*$/.test(owner ?? "") ||
-      ![owner, env.TEACHER_TELEGRAM_ID].includes(viewer)) return null;
+      !access || user.id !== source.chat.id || user.is_bot) return null;
   if (action && (typeof action.id !== "string" || typeof action.data !== "string" || action.data.length > 64)) {
     return null;
   }
   if (!action && typeof source.text !== "string") return null;
-  return { source, viewer, owner, action };
+  return { source, ...access, action };
 }
 
 async function ack(call, id, text) {
@@ -134,6 +133,9 @@ export function createWorker(http = fetch, clock = () => new Date()) {
   return {
     async fetch(request, env) {
       const { pathname } = new URL(request.url);
+      if (["/app", "/app.css", "/app.js", "/app/api"].includes(pathname)) {
+        return miniApp(request, env, clock(), pathname);
+      }
       if (pathname === "/health" && request.method === "GET") return reply();
       if (pathname !== "/telegram/webhook") return reply(404);
       if (request.method !== "POST") return reply(405);

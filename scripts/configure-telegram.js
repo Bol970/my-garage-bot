@@ -27,6 +27,9 @@ try {
   photo.append("photo", JSON.stringify({ type: "static", photo: "attach://avatar" }));
   photo.append("avatar", new Blob([image], { type: "image/jpeg" }), "avatar.jpg");
   await call("setMyProfilePhoto", photo);
+  await call("setChatMenuButton", {
+    menu_button: { type: "web_app", text: "Гараж", web_app: { url: new URL("/app", target).href } },
+  });
   await call("setWebhook", {
     url: new URL("/telegram/webhook", target).href,
     secret_token: secret,

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
@@ -40,7 +41,7 @@ function sqliteD1() {
   };
 }
 
-function harness(style = "rich", widgetAvailable = false) {
+function harness(style = "rich", widgetAvailable = false, clock = () => new Date("2026-11-25T19:00:00Z")) {
   const DB = sqliteD1();
   const calls = [];
   const cards = new Map();
@@ -70,7 +71,7 @@ function harness(style = "rich", widgetAvailable = false) {
     cards.set(body.chat_id, result);
     return Response.json({ ok: true, result });
   };
-  const worker = createWorker(http, () => new Date("2026-11-25T19:00:00Z"));
+  const worker = createWorker(http, clock);
   const env = {
     DB, CARD_STYLE: style, OWNER_TELEGRAM_ID: "5101", TEACHER_TELEGRAM_ID: "5102",
     TELEGRAM_BOT_TOKEN: "fixture-token", TELEGRAM_WEBHOOK_SECRET: "fixture-secret",
@@ -91,7 +92,7 @@ function harness(style = "rich", widgetAvailable = false) {
   });
   const key = (prefix, id = 5101) => cards.get(id).reply_markup.inline_keyboard.flat()
     .map((button) => button.callback_data).find((data) => data.startsWith(prefix));
-  return { DB, calls, cards, chat, say, press, key, send,
+  return { worker, env, DB, calls, cards, chat, say, press, key, send,
     interruptNextEdit() { failEdit = true; } };
 }
 
@@ -283,4 +284,96 @@ test("пробег и стоимость учитывают единицы, а �
   assert.equal(parseEntry("Отремонтировали машину за 2 дня", today).costMinor, null);
   assert.equal(parseEntry("Заменили колодки за 250 евро", today).costMinor, null);
   assert.throws(() => parseEntry("Ремонт генератора за -3000 рублей", today), /стоимость/);
+});
+
+function signMiniApp(userId, botToken, at = Date.parse("2026-11-25T19:00:00Z")) {
+  const init = new URLSearchParams({
+    auth_date: String(at / 1000),
+    query_id: "fixture",
+    user: JSON.stringify({ id: userId, first_name: "Test" }),
+  });
+  init.sort();
+  const key = createHmac("sha256", "WebAppData").update(botToken).digest();
+  const check = Array.from(init, ([name, value]) => name + "=" + value).join("\n");
+  init.set("hash", createHmac("sha256", key).update(check).digest("hex"));
+  return init.toString();
+}
+
+test("Mini App проверяет подпись Telegram и даёт преподавателю только чтение", async () => {
+  const { worker, env, DB, calls } = harness();
+  const owner = signMiniApp(5101, env.TELEGRAM_BOT_TOKEN);
+  const teacher = signMiniApp(5102, env.TELEGRAM_BOT_TOKEN);
+  const outsider = signMiniApp(5103, env.TELEGRAM_BOT_TOKEN);
+  const old = signMiniApp(5101, env.TELEGRAM_BOT_TOKEN, Date.parse("2026-11-25T12:00:00Z"));
+  const call = (data, init = owner) => worker.fetch(new Request("https://garage.example/app/api", {
+    method: "POST", body: JSON.stringify(data), headers: { "Authorization": "tma " + init },
+  }), env);
+  const request = async (data, init) => {
+    const response = await call(data, init);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    return response.json();
+  };
+
+  for (const init of ["", old, outsider, teacher.replace("5102", "5101"), owner + "&auth_date=1"]) {
+    assert.equal((await call({ action: "home" }, init)).status, 403);
+  }
+  assert.equal((await request({ action: "home" })).canEdit, true);
+  const vehicleId = "f101000000000000";
+  const entryId = "f200000000000000";
+  assert.equal((await request({ action: "check-car", text: "Учётная машина | Example S" })).model, "Example S");
+  await request({ action: "create-car", id: vehicleId, text: "Учётная машина | Example S" });
+  assert.deepEqual(await request({ action: "home" }, teacher), {
+    canEdit: false, cars: [{ id: vehicleId, initial_mileage: null, model: "Example S",
+      model_year: null, nickname: "Учётная машина" }],
+  });
+  const text = "Вчера заменил ступичный подшипник за 18 тысяч рублей";
+  const preview = await request({ action: "check-entry", text });
+  assert.equal(preview.costMinor, 1_800_000);
+  assert.equal(preview.date, "2026-11-24");
+  assert.equal(preview.kind, "repair");
+  assert.equal(DB.sql.prepare("SELECT count(*) AS n FROM entries").get().n, 0);
+  const save = { action: "save-entry", vehicleId, id: entryId, text };
+  assert.equal((await call(save, teacher)).status, 403);
+  await request(save);
+  await request(save);
+  assert.equal(DB.sql.prepare("SELECT count(*) AS n FROM entries").get().n, 1);
+  const car = await request({ action: "car", vehicleId, filter: "repair" }, teacher);
+  assert.equal(car.entries[0].cost_minor, 1_800_000);
+  assert.equal(car.summary.total_cost, 1_800_000);
+  assert.equal((await request({ action: "entry", vehicleId, entryId }, teacher)).kind, "repair");
+  assert.equal((await call({ action: "save-entry", vehicleId, entryId, text }, teacher)).status, 403);
+  assert.equal((await call({ action: "resolve", vehicleId, entryId }, teacher)).status, 403);
+  assert.equal(calls.length, 0, "Mini App does not post to Telegram");
+
+  const page = await worker.fetch(new Request("https://garage.example/app"), env);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /telegram-web-app\.js/);
+  const script = await worker.fetch(new Request("https://garage.example/app.js"), env);
+  const js = await script.text();
+  assert.doesNotThrow(() => new Function(js));
+  assert.match(script.headers.get("Content-Type"), /javascript/);
+});
+
+test("Mini App сохраняет подтверждённую дату после полуночи", async () => {
+  let now = new Date("2026-11-25T20:59:00Z");
+  const { worker, env, DB } = harness("rich", false, () => now);
+  const init = signMiniApp(5101, env.TELEGRAM_BOT_TOKEN, +now);
+  const request = async (payload) => {
+    const response = await worker.fetch(new Request("https://garage.example/app/api", {
+      method: "POST", body: JSON.stringify(payload), headers: { Authorization: "tma " + init },
+    }), env);
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+
+  const vehicleId = "f101000000000000";
+  await request({ action: "create-car", id: vehicleId, text: "Автомобиль" });
+  const text = "Вчера заменил масло";
+  const preview = await request({ action: "check-entry", text });
+  assert.equal(preview.date, "2026-11-24");
+  now = new Date("2026-11-25T21:01:00Z");
+  await request({ action: "save-entry", vehicleId, id: "f200000000000000", text,
+    referenceDate: preview.referenceDate });
+  assert.equal(DB.sql.prepare("SELECT happened_on FROM entries").get().happened_on, "2026-11-24");
 });

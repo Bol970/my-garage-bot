@@ -253,3 +253,34 @@ test("упоминание масла и замена масляного фил�
   assert(parseEntry("Заменил масляный фильтр", today).tags.includes("filter_change"));
   assert(!parseEntry("Пора заменить масло", today).tags.includes("oil_change"));
 });
+
+test("стоимость словами в тысячах и замена ступицы разбираются правильно", () => {
+  const today = "2026-11-25";
+  for (const [cost, expected] of [
+    ["21 тысяча рублей", 2_100_000],
+    ["32 тысячи рублей", 3_200_000],
+    ["18 тысяч рублей", 1_800_000],
+    ["18 тыщ рублей", 1_800_000],
+    ["14,5 тыс. руб.", 1_450_000],
+    ["14 тысяч", 1_400_000],
+    ["14 тысяч.", 1_400_000],
+    ["14 500 ₽", 1_450_000],
+    ["14 ₽", 1_400],
+  ]) {
+    const entry = parseEntry("Замена подшипника ступицы вчера за " + cost, today);
+    assert.equal(entry.costMinor, expected, cost);
+    assert.equal(entry.kind, "repair");
+    assert.equal(entry.date, "2026-11-24");
+    assert.equal(entry.title, "Замена подшипника ступицы");
+  }
+});
+
+test("пробег и стоимость учитывают единицы, а ТО и ремонт распознаются по контексту", () => {
+  const today = "2026-11-25";
+  assert.equal(parseEntry("Прошёл ТО на 85 тысяч км за 3 500 рублей", today).mileage, 85_000);
+  assert.equal(parseEntry("Сделал ТО за 3 500 ₽", today).kind, "service");
+  assert.equal(parseEntry("Заменил ступичный подшипник, стук пропал", today).kind, "repair");
+  assert.equal(parseEntry("Отремонтировали машину за 2 дня", today).costMinor, null);
+  assert.equal(parseEntry("Заменили колодки за 250 евро", today).costMinor, null);
+  assert.throws(() => parseEntry("Ремонт генератора за -3000 рублей", today), /стоимость/);
+});

@@ -83,8 +83,18 @@ export function parseVehicle(text, today) {
 
 const insuranceWords = /осаго|каско|страховк|страховой полис|полис/iu;
 const policyEnd = /(?:^|\s)(?:действует\s+)?(?:до|по)\s+(\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4})(?!\d)/iu;
-const rubles = /(?<![\d.,])(?:за\s+|стоимость\s*[:=]?\s*|стоило\s+)?(\d+(?:[ \u00a0\u202f]\d{3})*(?:[.,]\d{1,2})?)\s*(тыс\.?)?\s*(?:₽|руб(?:ль|ля|лей)?\.?(?![а-яё])|р\.(?![а-яё])|RUB\b)/iu;
-const labelledCost = /(?:^|\s)(?:за|стоимость|стоило|цена|заплатил[аи]?|оплатил[аи]?)\s*[:=]?\s*(\d+(?:[ \u00a0\u202f]\d{3})*(?:[.,]\d{1,2})?)(?:\s*(тыс\.?))?(?![\d.а-яё]|\s*(?:км|\d))/iu;
+const amount = String.raw`(?<amount>(?:[-−]\s*)?\d+(?:[ \u00a0\u202f]\d{3})*(?:[.,]\d{1,2})?)`;
+const thousandsWord = String.raw`(?:тысяч(?:а|и|у|е|ей|ам|ами|ах)?|тыщ(?:а|и|у)?|тыс\.?)(?![а-яё])`;
+const thousands = String.raw`(?:\s*(?<thousands>` + thousandsWord + `))?`;
+const rubles = new RegExp(String.raw`(?<![\d.,−-])(?:за\s+|стоимость\s*[:=]?\s*|стоило\s+)?`
+  + amount + thousands + String.raw`\s*(?:₽|руб(?:ль|ля|лей)?\.?(?![а-яё])|р\.(?![а-яё])|RUB\b)`, "iu");
+const labelledCost = new RegExp(String.raw`(?:^|\s)(?:за|стоимость|стоило|цена|заплатил[аи]?|оплатил[аи]?)\s*[:=]?\s*`
+  + amount + thousands + String.raw`(?=\s*(?:[,.!?;)](?!\d)|$))`, "iu");
+
+const distance = new RegExp(String.raw`(?<![\d,.])(?:пробег\s*|на\s+)?(\d+(?:\s\d{3})*(?:[.,]\d+)?)\s*`
+  + "(" + thousandsWord + String.raw`)?\s*км(?![а-яё])`, "iu");
+const labelledDistance = new RegExp(String.raw`(?:^|\s)пробег\s+(\d+(?:\s\d{3})*(?:[.,]\d+)?)`
+  + String.raw`(?:\s*(` + thousandsWord + String.raw`))?(?![\dа-яё]|[.,]\d|\s+\d)`, "iu");
 
 function toIso(value) {
   if (!value.includes(".")) return value;
@@ -94,9 +104,9 @@ function toIso(value) {
 
 function moneyMinor(match) {
   if (!match) return null;
-  const digits = match[1].replace(/\s/gu, "").replace(",", ".");
-  const cost = Math.round(Number(digits) * (match[2] ? 100_000 : 100));
-  if (!Number.isSafeInteger(cost) || cost > 10_000_000_000) {
+  const digits = match.groups.amount.replace(/\s/gu, "").replace("−", "-").replace(",", ".");
+  const cost = Math.round(Number(digits) * (match.groups.thousands ? 100_000 : 100));
+  if (!Number.isSafeInteger(cost) || cost < 0 || cost > 10_000_000_000) {
     throw new InputError("Укажите стоимость в рублях и копейках.");
   }
   return cost;
@@ -111,12 +121,16 @@ function classify(text) {
     && !/предстоит|планиру|нужно|надо|надлежит|пора|не (?:замен|поменя|смен)/u.test(title);
   if (change && tags.includes("oil")) tags.push("oil_change");
   if (change && tags.includes("filters")) tags.push("filter_change");
+  if (change && /ступичн|ступиц/u.test(title)) return { kind: "repair", tags };
   if (/стук|шум|свист|теч[ьеё]|проблем|вибраци|не завод|не включ|загорел|скрип/u.test(title)
       && !/устранил|исправил|отремонтировал/u.test(title)) {
     return { kind: "problem", tags };
   }
-  if (/ремонт|устранил|починил|исправил|отремонтировал/u.test(title)) return { kind: "repair", tags };
-  if (change || /^(?:то(?:\s|$)|прош[её]л то\b)|техобслуж|обслуживани[ея]/u.test(title)) {
+  if (/ремонт|устранил|починил|исправил|отремонтировал/u.test(title)) {
+    return { kind: "repair", tags };
+  }
+  const service = /^то(?=$|[\s,.!?;:])|(?:^|\s)(?:прош[её]л|сделал|пров[её]л)\s+то(?=$|[\s,.!?;:])|техобслуж|обслуживани[ея]/u;
+  if (change || service.test(title)) {
     return { kind: "service", tags };
   }
   return { kind: "note", tags };
@@ -150,10 +164,9 @@ export function parseEntry(text, today) {
   if (validUntil && validUntil < date) {
     throw new InputError("Окончание страховки должно быть в день покупки или позже.");
   }
-  const distance = /(?<![\d,.])(?:пробег\s*|на\s+)?(\d+(?:[\s\u00a0\u202f]\d{3})*(?:[.,]\d+)?)\s*(тыс\.?\s*)?км(?![а-яё])/iu.exec(remaining)
-    || /(?:^|\s)пробег\s+(\d+(?:\s\d{3})*)(?!\d)/iu.exec(remaining);
-  const mileage = distance ? mileageNumber(distance[1], Boolean(distance[2])) : null;
-  if (distance) remaining = remaining.replace(distance[0], " ");
+  const odometer = distance.exec(remaining) || labelledDistance.exec(remaining);
+  const mileage = odometer ? mileageNumber(odometer[1], Boolean(odometer[2])) : null;
+  if (odometer) remaining = remaining.replace(odometer[0], " ");
   const cost = rubles.exec(remaining) || labelledCost.exec(remaining);
   const costMinor = moneyMinor(cost);
   if (cost) remaining = remaining.replace(cost[0], " ");

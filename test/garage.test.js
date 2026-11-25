@@ -48,7 +48,7 @@ function harness(style = "rich", widgetAvailable = false, clock = () => new Date
   const cards = new Map();
   let messageId = 50;
   let updateId = 0;
-  let failEdit = false;
+  let editError;
   const http = async (url, request) => {
     const method = new URL(url).pathname.split("/").at(-1);
     const body = JSON.parse(request.body);
@@ -58,9 +58,10 @@ function harness(style = "rich", widgetAvailable = false, clock = () => new Date
       return Response.json({ ok: false, error_code: 400, description: "INPUT_MEDIA_WIDGET_NOT_ALLOWED" },
         { status: 400 });
     }
-    if (method === "editMessageText" && failEdit) {
-      failEdit = false;
-      return Response.json({ ok: false, error_code: 500 }, { status: 500 });
+    if (method === "editMessageText" && editError) {
+      const { code, description } = editError;
+      editError = null;
+      return Response.json({ ok: false, error_code: code, description }, { status: code });
     }
     if (method.startsWith("send")) {
       const result = { ...body, message_id: messageId++ };
@@ -94,7 +95,8 @@ function harness(style = "rich", widgetAvailable = false, clock = () => new Date
   const key = (prefix, id = 5101) => cards.get(id).reply_markup.inline_keyboard.flat()
     .map((button) => button.callback_data).find((data) => data.startsWith(prefix));
   return { worker, env, DB, calls, cards, chat, say, press, key, send,
-    interruptNextEdit() { failEdit = true; } };
+    interruptNextEdit() { editError = { code: 500 }; },
+    hidePreviousCard(description) { editError = { code: 400, description }; } };
 }
 
 test("гараж, замена и история обновляют одно сообщение", async () => {
@@ -571,4 +573,36 @@ test("Telegram-команды открывают календарь и спис�
   await press("x:all");
   assert(texts().includes("Весь гараж"));
   assert(texts().includes("За период · 37 700 ₽"));
+});
+
+test("команда /garage открывает видимую карточку даже если Telegram ещё позволяет менять скрытую", async () => {
+  const { cards, calls, DB, chat, press, say, send } = harness();
+  DB.sql.exec(garageSeedSql("5101"));
+  await say("/start");
+  const oldId = cards.get(5101).message_id;
+  const update = { update_id: 999, message: { ...chat(5101), text: "/garage" } };
+  assert.equal((await send(update)).status, 200);
+  const newId = cards.get(5101).message_id;
+  assert.notEqual(newId, oldId);
+  assert.equal((await send(update)).status, 200);
+  assert.deepEqual(calls.map(({ method }) => method), ["sendRichMessage", "sendRichMessage"]);
+
+  await press("x:garage", 5101, oldId);
+  assert.equal(calls.at(-1).method, "answerCallbackQuery");
+  assert.equal(calls.at(-1).body.text, "Карточка обновилась. Откройте /garage.");
+  await press("x:garage");
+  assert.equal(calls.at(-1).method, "editMessageText");
+  assert.equal(calls.at(-1).body.message_id, newId);
+  assert(cards.get(5101).rich_message.blocks.some((block) => block.text === "Расходы списком"));
+  assert.equal(DB.sql.prepare("SELECT count(*) AS n FROM entries").get().n, 9);
+});
+
+test("удалённая карточка переоткрывается при MESSAGE_ID_INVALID", async () => {
+  const { cards, calls, say, hidePreviousCard } = harness();
+  await say("/garage");
+  const oldId = cards.get(5101).message_id;
+  hidePreviousCard("Bad Request: MESSAGE_ID_INVALID");
+  assert.equal((await say("/calendar")).status, 200);
+  assert.notEqual(cards.get(5101).message_id, oldId);
+  assert.deepEqual(calls.map(({ method }) => method), ["sendRichMessage", "editMessageText", "sendRichMessage"]);
 });

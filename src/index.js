@@ -154,7 +154,11 @@ async function callback(store, state, data, today) {
 
 async function message(env, store, state, text, today, http) {
   const command = /^\/([a-z]+)(?:@\w+)?(?:\s|$)/i.exec(text)?.[1]?.toLowerCase();
-  if (command === "start" || command === "garage" || command === "help" || command === "cancel") {
+  if (command === "start" || command === "garage") {
+    // The user can clear chat history without removing the saved card ID from the bot's view.
+    return show(state, "garage", { vehicleId: null, carPage: 0, messageId: null });
+  }
+  if (command === "help" || command === "cancel") {
     return show(state, "garage", { vehicleId: null, carPage: 0 });
   }
   if (command === "expenses" || command === "calendar") return expenseCommand(state, command, text, today);

@@ -57,7 +57,8 @@ export async function deliverCard(call, chatId, state, card, preferredStyle) {
       }
       return { messageId: state.messageId, cardStyle: state.cardStyle || "rich" };
     } catch (error) {
-      if (!matches(error, /message to edit not found|message is not found|message can't be edited/i)) throw error;
+      const missing = /message to edit not found|message is not found|message (?:can't|cannot) be edited|MESSAGE_ID_INVALID|MESSAGE_NOT_FOUND/i;
+      if (!matches(error, missing)) throw error;
     }
   }
 

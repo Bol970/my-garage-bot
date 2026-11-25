@@ -11,7 +11,7 @@ export class TelegramError extends Error {
 }
 
 export async function callTelegramApi(token, method, payload, http = fetch) {
-  const form = payload instanceof FormData;
+  const form = payload instanceof FormData || payload instanceof URLSearchParams;
   const response = await http("https://api.telegram.org/bot" + token + "/" + method, {
     method: "POST",
     headers: form ? undefined : { "content-type": "application/json" },

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createWorker } from "../src/index.js";
+import { callTelegramApi } from "../src/telegram.js";
 import { parseEntry } from "../src/domain.js";
 import { garageSeedSql } from "../scripts/seed-garage.js";
 
@@ -376,4 +377,16 @@ test("Mini App сохраняет подтверждённую дату посл
   await request({ action: "save-entry", vehicleId, id: "f200000000000000", text,
     referenceDate: preview.referenceDate });
   assert.equal(DB.sql.prepare("SELECT happened_on FROM entries").get().happened_on, "2026-11-24");
+});
+
+test("меню Mini App передаётся как форма Telegram", async () => {
+  const button = { type: "web_app", text: "Гараж", web_app: { url: "https://garage.example/app" } };
+  const fields = new URLSearchParams({ menu_button: JSON.stringify(button) });
+  const checked = await callTelegramApi("fixture-token", "setChatMenuButton", fields, async (url, init) => {
+    const request = new Request(url, init);
+    assert.match(request.headers.get("Content-Type"), /^application\/x-www-form-urlencoded/);
+    assert.deepEqual(JSON.parse(new URLSearchParams(await request.text()).get("menu_button")), button);
+    return Response.json({ ok: true, result: true });
+  });
+  assert.equal(checked, true);
 });

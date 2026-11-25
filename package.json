@@ -1,0 +1,20 @@
+{
+  "name": "my-garage-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "test": "node --test --experimental-test-isolation=none",
+    "dev": "wrangler dev",
+    "d1:local": "wrangler d1 migrations apply DB --local",
+    "d1:remote": "wrangler d1 migrations apply DB --remote",
+    "deploy": "wrangler deploy",
+    "telegram:configure": "node scripts/configure-telegram.js"
+  },
+  "devDependencies": {
+    "wrangler": "4.110.0"
+  }
+}

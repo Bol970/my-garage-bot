@@ -1,0 +1,17 @@
+node_modules/
+.wrangler/
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
+wrangler.production.toml
+data/
+exports/
+backups/
+*.db
+*.db-*
+*.sqlite*
+*.sql.gz
+*.log
+.npmrc
+.DS_Store

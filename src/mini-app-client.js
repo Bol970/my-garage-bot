@@ -1,3 +1,5 @@
+import { appCalendarClient } from "./mini-app-calendar.js";
+
 export const appClient = String.raw`
 const telegram = window.Telegram?.WebApp;
 const heading = document.querySelector("#heading");
@@ -123,7 +125,9 @@ async function home() {
   const cars = data.cars.map((car) => record(car.nickname, carName(car), () => showCar(car.id)));
   if (!cars.length) cars.push(el("p", "В гараже пока нет автомобилей.", "muted"));
   if (!canEdit) cars.unshift(el("p", "Режим просмотра", "muted"));
-  view("Гараж", cars, canEdit ? [button("＋ Автомобиль", () => carForm(), "primary")] : []);
+  const actions = [button("Расходы", () => showExpenses())];
+  if (canEdit) actions.push(button("＋ Автомобиль", () => carForm(), "primary"));
+  view("Гараж", cars, actions);
 }
 
 function carForm(prefilled = [], id = randomId()) {
@@ -196,12 +200,12 @@ async function showCar(vehicleId, filter = "all", page = 0) {
     label("История", select), ...history,
   ];
   if (steps.childElementCount) main.push(steps);
-  const actions = [button("‹ Гараж", home)];
+  const actions = [button("‹ Гараж", home), button("Расходы", () => showExpenses("month", undefined, vehicleId))];
   if (canEdit) actions.push(button("＋ Запись", () => entryForm(vehicleId), "primary"));
   view(car.nickname, main, actions);
 }
 
-async function showEntry(vehicleId, entryId, filter = "all", page = 0) {
+async function showEntry(vehicleId, entryId, filter = "all", page = 0, returnTo) {
   const entry = await api("entry", { vehicleId, entryId });
   const values = [[entry.kind === "insurance" ? "Дата покупки" : "Дата", displayDate(entry.happened_on)],
     ["Категория", title[entry.kind]], ["Стоимость", cost(entry.cost_minor)]];
@@ -213,10 +217,12 @@ async function showEntry(vehicleId, entryId, filter = "all", page = 0) {
   if (canEdit && entry.kind === "problem" && !entry.resolved_on) {
     main.push(button("Проблема решена", async () => {
       await api("resolve", { vehicleId, entryId });
-      await showEntry(vehicleId, entryId, filter, page);
+      await showEntry(vehicleId, entryId, filter, page, returnTo);
     }));
   }
-  const actions = [button("‹ История", () => showCar(vehicleId, filter, page))];
+  const actions = [returnTo
+    ? button("‹ Расходы за день", returnTo)
+    : button("‹ История", () => showCar(vehicleId, filter, page))];
   if (canEdit) actions.push(button("Исправить", () => entryForm(vehicleId, entry), "primary"));
   view(entry.title, main, actions);
 }
@@ -265,4 +271,4 @@ if (telegram?.initData) {
 } else {
   statusLine.textContent = "Откройте гараж через кнопку «Гараж» в Telegram.";
 }
-`;
+` + "\n" + appCalendarClient;

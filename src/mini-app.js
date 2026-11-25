@@ -1,5 +1,6 @@
 import { garageAccess } from "./access.js";
 import { filters, InputError, localDate, parseEntry, parseVehicle } from "./domain.js";
+import { expenseDay, expensePeriod } from "./expenses.js";
 import { GarageStore } from "./store.js";
 import { appClient } from "./mini-app-client.js";
 import { appPage, appStyles } from "./mini-app-page.js";
@@ -99,6 +100,23 @@ async function write(store, payload, car, today) {
   }
 }
 
+
+async function calendar(store, payload, today) {
+  const vehicleId = payload.vehicleId ?? null;
+  if (vehicleId !== null && (!validId(vehicleId) || !await store.vehicle(vehicleId))) {
+    return json({ error: "Автомобиль не найден." }, 404);
+  }
+  if (payload.action === "expense-day") {
+    const day = expenseDay(payload.day);
+    const entries = await store.expensesOn(day, vehicleId);
+    return json({ day, entries });
+  }
+  const period = expensePeriod(payload.mode, payload.anchor, today);
+  const [rows, vehicles] = await Promise.all([store.expenses(period, vehicleId), store.cars()]);
+  const total = rows.reduce((sum, row) => sum + row.amount, 0);
+  return json({ period, today, rows, total, cars: vehicles.map(publicVehicle) });
+}
+
 async function appApi(request, env, now) {
   const actor = await telegramUser(request.headers.get("Authorization"), env.TELEGRAM_BOT_TOKEN, now);
   const access = garageAccess(env, actor);
@@ -113,6 +131,9 @@ async function appApi(request, env, now) {
 
   try {
     const today = localDate(env.TIMEZONE, now);
+    if (payload.action === "expenses" || payload.action === "expense-day") {
+      return await calendar(store, payload, today);
+    }
     if (payload.action === "home") {
       return json({ canEdit: store.canEdit, cars: (await store.cars()).map(publicVehicle) });
     }

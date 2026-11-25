@@ -2,6 +2,7 @@ import { garageAccess } from "./access.js";
 import { makeView } from "./cards.js";
 import { filters, InputError, localDate, parseEntry, parseVehicle, shortId } from "./domain.js";
 import { miniApp } from "./mini-app.js";
+import { sendOsagoReminders } from "./osago-reminders.js";
 import { enrichEntry } from "./openrouter.js";
 import { GarageStore } from "./store.js";
 import { callTelegramApi, deliverCard, TelegramError } from "./telegram.js";
@@ -131,6 +132,9 @@ async function ack(call, id, text) {
 
 export function createWorker(http = fetch, clock = () => new Date()) {
   return {
+    async scheduled(controller, env) {
+      await sendOsagoReminders(env, new Date(controller.scheduledTime), http);
+    },
     async fetch(request, env) {
       const { pathname } = new URL(request.url);
       if (["/app", "/app.css", "/app.js", "/app/api"].includes(pathname)) {

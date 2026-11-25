@@ -81,6 +81,24 @@ input, select, textarea {
 textarea { resize: vertical; min-height: 8rem; }
 input::placeholder, textarea::placeholder { color: var(--hint); opacity: 1; }
 .entry-text { white-space: pre-wrap; }
+
+.calendar-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .4rem; }
+.calendar-modes button { padding-inline: .25rem; }
+.calendar-navigation { display: grid; grid-template-columns: 44px 1fr 44px; gap: .6rem; align-items: center; }
+.calendar-navigation h2 { text-align: center; text-transform: capitalize; }
+.calendar-modes button, .calendar-navigation button { min-width: 0; }
+.calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: .24rem; align-items: stretch; }
+.calendar-weekday { color: var(--hint); text-align: center; font-size: .72rem; }
+.calendar-day {
+  min-height: 44px; min-width: 0; padding: .23rem .12rem;
+  display: grid; align-content: center; justify-items: center;
+  background: var(--surface); border-radius: .5rem; font-size: .8rem; line-height: 1.15;
+}
+.expense-day { background: color-mix(in srgb, var(--surface), var(--accent) 16%); }
+.calendar-amount { display: block; width: 100%; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .65rem; margin-top: .15rem; }
+.calendar-today { outline: 1px solid var(--accent); outline-offset: -1px; }
+.calendar-months { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem; }
+.calendar-months .record-title { text-transform: capitalize; }
 @media (max-width: 340px) {
   .top, #main, #dock { padding-inline: .65rem; }
   h1 { font-size: 1.5rem; }

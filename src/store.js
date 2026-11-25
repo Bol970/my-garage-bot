@@ -133,6 +133,66 @@ export class GarageStore {
     ).run();
   }
 
+  async expenses(period, vehicleId) {
+    const bucket = period.mode === "month" ? "happened_on" : "substr(happened_on, 1, 7)";
+    const { results } = await this.query(
+      `SELECT ${bucket} AS bucket, sum(cost_minor) AS amount, count(*) AS count
+       FROM entries WHERE owner_id = ? AND happened_on >= ? AND happened_on < ?
+       AND cost_minor IS NOT NULL AND (? IS NULL OR vehicle_id = ?)
+       GROUP BY ${bucket} ORDER BY bucket`,
+      this.owner, period.start, period.end, vehicleId, vehicleId,
+    ).all();
+    return results;
+  }
+
+  async expensesOn(day, vehicleId) {
+    const { results } = await this.query(
+      `SELECT e.id, e.vehicle_id, e.title, e.kind, e.cost_minor, v.nickname AS vehicle
+       FROM entries AS e JOIN vehicles AS v ON v.owner_id = e.owner_id AND v.id = e.vehicle_id
+       WHERE e.owner_id = ? AND e.happened_on = ? AND e.cost_minor IS NOT NULL
+       AND (? IS NULL OR e.vehicle_id = ?)
+       ORDER BY e.created_at, e.id`,
+      this.owner, day, vehicleId, vehicleId,
+    ).all();
+    return results;
+  }
+
+  async insurancePolicies(day) {
+    const { results } = await this.query(
+      `SELECT e.vehicle_id, e.title, e.details, e.valid_until, v.nickname
+       FROM entries AS e JOIN vehicles AS v ON v.owner_id = e.owner_id AND v.id = e.vehicle_id
+       WHERE e.owner_id = ? AND e.kind = 'insurance' AND e.valid_until > ? AND e.happened_on <= ?
+       ORDER BY e.valid_until DESC, e.happened_on DESC, e.id`,
+      this.owner, day, day,
+    ).all();
+    return results;
+  }
+
+  async reserveReminder(policy, threshold) {
+    const result = await this.query(
+      `INSERT OR IGNORE INTO osago_reminders (owner_id, vehicle_id, valid_until, days_before)
+       VALUES (?, ?, ?, ?)`,
+      this.owner, policy.vehicle_id, policy.valid_until, threshold,
+    ).run();
+    return Boolean(result.meta.changes);
+  }
+
+  async confirmReminder(policy, threshold) {
+    await this.query(
+      `UPDATE osago_reminders SET sent_at = CURRENT_TIMESTAMP
+       WHERE owner_id = ? AND vehicle_id = ? AND valid_until = ? AND days_before = ?`,
+      this.owner, policy.vehicle_id, policy.valid_until, threshold,
+    ).run();
+  }
+
+  async releaseReminder(policy, threshold) {
+    await this.query(
+      `DELETE FROM osago_reminders
+       WHERE owner_id = ? AND vehicle_id = ? AND valid_until = ? AND days_before = ? AND sent_at IS NULL`,
+      this.owner, policy.vehicle_id, policy.valid_until, threshold,
+    ).run();
+  }
+
   async summary(vehicleId) {
     return this.query(
       `SELECT count(*) AS count,

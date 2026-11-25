@@ -10,7 +10,7 @@ import { garageSeedSql } from "../scripts/seed-garage.js";
 
 function sqliteD1() {
   const sql = new DatabaseSync(":memory:");
-  for (const name of ["0001_garage.sql", "0002_insurance_and_cost.sql"]) {
+  for (const name of ["0001_garage.sql", "0002_insurance_and_cost.sql", "0003_expenses_and_reminders.sql"]) {
     sql.exec(readFileSync(new URL("../migrations/" + name, import.meta.url), "utf8"));
   }
   return {
@@ -389,4 +389,107 @@ test("меню Mini App передаётся как форма Telegram", async 
     return Response.json({ ok: true, result: true });
   });
   assert.equal(checked, true);
+});
+
+test("календарь суммирует расходы за месяц, квартал и год по всем машинам и по одной", async () => {
+  const { worker, env, DB } = harness();
+  DB.sql.exec(garageSeedSql("5101"));
+  const outsider = "5103";
+  const request = (data, id = 5101) => worker.fetch(new Request("https://garage.example/app/api", {
+    method: "POST", body: JSON.stringify(data),
+    headers: { Authorization: "tma " + signMiniApp(id, env.TELEGRAM_BOT_TOKEN) },
+  }), env);
+  const read = async (data, id) => {
+    const response = await request(data, id);
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const november = await read({ action: "expenses", mode: "month" });
+  assert.equal(november.period.start, "2026-11-01");
+  assert.equal(november.period.end, "2026-12-01");
+  assert.equal(november.total, 3_770_000);
+  assert.deepEqual(november.rows.map(({ bucket }) => bucket), ["2026-11-04", "2026-11-11"]);
+  assert.equal(november.cars.length, 3);
+  const kia = november.cars.find((car) => car.model === "Kia Rio X").id;
+  const rav4 = november.cars.find((car) => car.model === "Toyota RAV4").id;
+
+  const quarter = await read({ action: "expenses", mode: "quarter", anchor: "2026-11" });
+  assert.equal(quarter.total, 5_625_000);
+  assert.equal(quarter.period.start, "2026-10-01");
+  assert.equal(quarter.period.end, "2027-01-01");
+  assert.equal(quarter.period.next, "2027-01");
+  assert.deepEqual(quarter.rows.map(({ bucket }) => bucket), ["2026-10", "2026-11"]);
+  assert.equal((await read({ action: "expenses", mode: "quarter", anchor: "2026-12", vehicleId: kia })).total, 1_855_000);
+  assert.equal((await read({ action: "expenses", mode: "year", anchor: "2026-11" }, 5102)).total, 13_880_000);
+  assert.equal((await read({ action: "expenses", mode: "year", anchor: "2026-02", vehicleId: rav4 })).total, 5_550_000);
+
+  const day = await read({ action: "expense-day", day: "2026-11-04" }, 5102);
+  assert.equal(day.entries[0].vehicle_id, rav4);
+  assert.equal(day.entries[0].cost_minor, 2_650_000);
+  assert.deepEqual((await read({ action: "expense-day", day: "2026-11-04", vehicleId: kia })).entries, []);
+  assert.equal((await request({ action: "expenses", mode: "month" }, Number(outsider))).status, 403);
+  assert.equal((await request({ action: "expenses", mode: "month", anchor: "2026-13" })).status, 400);
+  assert.equal((await request({ action: "expense-day", day: "2026-02-29" })).status, 400);
+  assert.equal((await request({ action: "expenses", mode: "year", vehicleId: "ffffffffffffffff" })).status, 404);
+});
+
+test("ОСАГО уведомляет владельца за 30, 7 и 1 день и не дублирует уведомления", async () => {
+  const { worker, env, DB, calls } = harness();
+  DB.sql.exec(garageSeedSql("5101"));
+  const vehicle = DB.sql.prepare("SELECT id FROM vehicles WHERE model = 'Toyota RAV4'").get().id;
+  const addPolicy = DB.sql.prepare(
+    "INSERT INTO entries (id, owner_id, vehicle_id, happened_on, kind, title, valid_until) VALUES (?, ?, ?, ?, 'insurance', ?, ?)",
+  );
+  addPolicy.run("fixture-kasko", "5101", vehicle, "2026-11-15", "Купил КАСКО", "2027-03-05");
+  addPolicy.run("fixture-older", "5101", vehicle, "2026-02-01", "Купил ОСАГО", "2027-02-20");
+  const tick = (date) => worker.scheduled({ scheduledTime: Date.parse(date + "T07:00:00Z") }, env);
+  await tick("2027-02-08");
+  assert.equal(calls.length, 0);
+  await Promise.all([tick("2027-02-09"), tick("2027-02-09")]);
+  await tick("2027-02-10");
+  await tick("2027-03-04");
+  await tick("2027-03-10");
+  await tick("2027-03-11");
+  assert.deepEqual(calls.map(({ method }) => method), ["sendMessage", "sendMessage", "sendMessage"]);
+  assert(calls.every(({ body }) => body.chat_id === 5101 && body.protect_content && body.text.includes("11.03.2027")));
+  assert(calls[0].body.text.includes("30"));
+  assert(calls[1].body.text.includes("7"));
+  assert(calls[2].body.text.includes("1 день"));
+  const sent = DB.sql.prepare("SELECT days_before, sent_at FROM osago_reminders ORDER BY days_before").all();
+  assert.deepEqual(sent.map(({ days_before }) => days_before), [1, 7, 30]);
+  assert(sent.every(({ sent_at }) => sent_at));
+});
+
+test("напоминание учитывает продление ОСАГО и догоняет ближайший срок", async () => {
+  const { worker, env, DB, calls } = harness();
+  DB.sql.exec(garageSeedSql("5101"));
+  const vehicle = DB.sql.prepare("SELECT id FROM vehicles WHERE model = 'Toyota RAV4'").get().id;
+  const tick = (date) => worker.scheduled({ scheduledTime: Date.parse(date + "T07:00:00Z") }, env);
+  await tick("2027-02-15");
+  assert.equal(calls.length, 1);
+  assert(calls[0].body.text.includes("24"));
+  DB.sql.prepare(
+    "INSERT INTO entries (id, owner_id, vehicle_id, happened_on, kind, title, valid_until) VALUES (?, ?, ?, ?, 'insurance', ?, ?)",
+  ).run("fixture-renewal", "5101", vehicle, "2027-02-20", "ОСАГО продлено", "2028-03-11");
+  await tick("2027-03-04");
+  assert.equal(calls.length, 1);
+});
+
+test("отклонённое Telegram напоминание можно отправить повторно", async () => {
+  const { env, DB } = harness();
+  DB.sql.exec(garageSeedSql("5101"));
+  let attempts = 0;
+  const worker = createWorker(async () => {
+    attempts++;
+    return attempts === 1
+      ? Response.json({ ok: false, error_code: 429 }, { status: 429 })
+      : Response.json({ ok: true, result: { message_id: 7 } });
+  });
+  const at = Date.parse("2027-02-09T07:00:00Z");
+  await worker.scheduled({ scheduledTime: at }, env);
+  assert.equal(DB.sql.prepare("SELECT count(*) AS n FROM osago_reminders").get().n, 0);
+  await worker.scheduled({ scheduledTime: at }, env);
+  await worker.scheduled({ scheduledTime: at }, env);
+  assert.equal(attempts, 2);
+  assert.equal(DB.sql.prepare("SELECT count(sent_at) AS n FROM osago_reminders").get().n, 1);
 });
